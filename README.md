@@ -75,26 +75,7 @@ docker build -t kthare10/tnseq:latest -f Docker/Tnseq_Dockerfile .
 
 The container bundles: Java 17, seqkit 2.5.1, bwa 0.7, samtools, bedtools, deeptools 3.5.4, and R with optparse.
 
-### 2. Prepare Reference Files
-
-Copy your reference genome and gene annotation BED files into `references/`, or pass their paths directly via CLI arguments.
-
-For *Caulobacter crescentus* (the default organism in chienlab-tnseq):
-
-```bash
-cp ../chienlab-tnseq/references/NC_011916.fasta references/
-cp ../chienlab-tnseq/references/NC_011916.fasta.{amb,ann,bwt,pac,sa} references/
-cp ../chienlab-tnseq/references/CCNA_mid_trim10_10.bed references/
-cp ../chienlab-tnseq/references/CCNA_genes.bed references/
-```
-
-If BWA index files don't exist for your reference, generate them:
-
-```bash
-bwa index references/your_reference.fasta
-```
-
-### 3. Prepare Input Data
+### 2. Prepare Input Data
 
 Place gzipped FASTQ files in a directory with the naming convention `{sample}.fq.gz`:
 
