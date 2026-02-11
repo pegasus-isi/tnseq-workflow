@@ -214,7 +214,31 @@ The four TSV files are the primary results, containing per-gene insertion counts
 
 ## Running on FABRIC
 
-To run this workflow on the [FABRIC testbed](https://fabric-testbed.net/), provision an HTCondor cluster using FABlib (see the `orcasound/` directory for example FABRIC deployment notebooks), then generate and submit the workflow on the submit node.
+The workflow can also be run on the [FABRIC testbed](https://fabric-testbed.net/) by deploying a distributed Pegasus/HTCondor cluster across FABRIC sites.
+
+### Deploy a Pegasus/HTCondor Cluster
+
+You can provision a cluster using either of the following notebooks:
+
+| Option | Link | Description |
+|--------|------|-------------|
+| FABRIC Artifact (Recommended) | [Pegasus-FABRIC Artifact](https://artifacts.fabric-testbed.net/artifacts/53da4088-a175-4f0c-9e25-a4a371032a39) | Pre-configured notebook from the FABRIC Artifacts repository |
+| Jupyter Examples | [pegasus-fabric.ipynb](https://github.com/fabric-testbed/jupyter-examples/blob/f7be0c75f22544c72d7b3e3fa42bbdfd9d8bb841/fabric_examples/complex_recipes/pegasus/pegasus-fabric.ipynb) | Notebook from the official FABRIC Jupyter examples |
+
+Both notebooks provision the following cluster architecture:
+
+- **Submit Node** -- Central Manager running HTCondor scheduler and Pegasus WMS
+- **Worker Nodes** -- Distributed execution points across multiple FABRIC sites
+- **FABNetv4 Networking** -- Private L3 network connecting all nodes
+
+### Setup Steps
+
+1. Log into the [FABRIC JupyterHub](https://jupyter.fabric-testbed.net/)
+2. Upload or clone one of the Pegasus-FABRIC notebooks above
+3. Configure your desired sites and node specifications
+4. Run the notebook to provision the cluster
+5. Clone this repository on the submit node
+6. Run the workflow using the commands shown above.
 
 ## Acknowledgments
 
