@@ -1,0 +1,26 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y \
+        python3 python3-pip \
+        openjdk-17-jre-headless \
+        wget curl git \
+        samtools \
+        bedtools \
+        bwa \
+        r-base \
+        r-cran-optparse \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install seqkit
+RUN wget -q https://github.com/shenwei356/seqkit/releases/download/v2.5.1/seqkit_linux_amd64.tar.gz -O /tmp/seqkit.tar.gz && \
+    tar -xzf /tmp/seqkit.tar.gz -C /usr/local/bin/ && \
+    rm /tmp/seqkit.tar.gz
+
+# Install deeptools (provides bamCoverage)
+RUN pip3 install --no-cache-dir deeptools==3.5.4
+
+# Ensure python3 is available as python
+RUN ln -sf /usr/bin/python3 /usr/bin/python
