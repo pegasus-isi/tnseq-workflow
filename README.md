@@ -66,14 +66,26 @@ tnseq-workflow/
 
 ## Setup
 
-### 1. Build the Docker Container
+### 1. Build the Container
 
 ```bash
 cd tnseq-workflow
-docker build -t kthare10/tnseq:latest -f Docker/Tnseq_Dockerfile .
+apptainer build Apptainer/Tnseq_Container.sif Apptainer/Tnseq_Container.def
+
+# Verify
+apptainer exec Apptainer/Tnseq_Container.sif which bwa samtools seqkit bamCoverage
 ```
 
 The container bundles: Java 17, seqkit 2.5.1, bwa 0.7, samtools, bedtools, deeptools 3.5.4, and R with optparse.
+
+No registry push — Pegasus stages the `.sif` like any other input file, and
+`workflow_generator.py` looks for `Apptainer/Tnseq_Container.sif` by default
+(override with `--container-sif`).
+
+This image is **x86_64-only**: it installs the `seqkit_linux_amd64` release, so a
+`.sif` built on aarch64 would contain a `seqkit` binary that cannot execute. And
+Apptainer cannot build on macOS at all — build on an x86_64 Linux host. See
+`../APPTAINER.md`. The legacy `Docker/Tnseq_Dockerfile` is kept as a fallback.
 
 ### 2. Prepare Input Data
 
