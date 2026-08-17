@@ -52,8 +52,10 @@ tnseq-workflow/
 │   └── je_1.2_bundle.jar       # Je UMI tool (Java)
 ├── data/
 │   └── test/                   # Test FASTQ files (100K reads from NCBI SRA)
+├── Apptainer/
+│   └── Tnseq_Container.def     # Container definition with all bioinformatics tools
 ├── Docker/
-│   └── Tnseq_Dockerfile        # Container with all bioinformatics tools
+│   └── Tnseq_Dockerfile        # Legacy Dockerfile, kept as a fallback
 └── references/                  # C. crescentus NA1000 reference genome and gene annotations
 ```
 
@@ -62,18 +64,56 @@ tnseq-workflow/
 - [Pegasus WMS](https://pegasus.isi.edu/) >= 5.0
 - [HTCondor](https://htcondor.org/) >= 10.2
 - Python 3.8+
-- Docker or Singularity (for container execution)
+- Apptainer (on the submit host to build, and on the worker nodes to run)
 
 ## Setup
 
-### 1. Build the Docker Container
+### 1. Build the Container
 
 ```bash
 cd tnseq-workflow
-docker build -t kthare10/tnseq:latest -f Docker/Tnseq_Dockerfile .
+apptainer build Apptainer/Tnseq_Container.sif Apptainer/Tnseq_Container.def
+
+# Verify
+apptainer exec Apptainer/Tnseq_Container.sif which bwa samtools seqkit bamCoverage
 ```
 
 The container bundles: Java 17, seqkit 2.5.1, bwa 0.7, samtools, bedtools, deeptools 3.5.4, and R with optparse.
+
+No registry push — Pegasus stages the `.sif` like any other input file, and
+`workflow_generator.py` looks for `Apptainer/Tnseq_Container.sif` by default
+(override with `--container-sif`).
+
+This image is **x86_64-only**: it installs the `seqkit_linux_amd64` release, so a
+`.sif` built on aarch64 would contain a `seqkit` binary that cannot execute. And
+Apptainer cannot build on macOS at all — build on an x86_64 Linux host. See
+[`APPTAINER.md`](APPTAINER.md). The legacy `Docker/Tnseq_Dockerfile` is kept as a fallback.
+
+<details>
+<summary>Optional: publish the image to ghcr.io</summary>
+
+Useful for sharing one build across a team or citing an immutable artifact. Needs a
+GitHub token with `write:packages`.
+
+```bash
+echo "$GHCR_TOKEN" | apptainer registry login --username <github-user> \
+    --password-stdin oras://ghcr.io
+
+TAG=$(git rev-parse --short HEAD)
+apptainer push Apptainer/Tnseq_Container.sif \
+    oras://ghcr.io/pegasus-isi/tnseq-workflow:$TAG
+
+# On the submit host, pull back to the path the generator expects
+apptainer pull Apptainer/Tnseq_Container.sif \
+    oras://ghcr.io/pegasus-isi/tnseq-workflow:$TAG
+```
+
+Do **not** put the `oras://` URL in the transformation catalog — Pegasus supports
+`docker://`, `shub://`, `library://`, `shifter://` and `file://`, not `oras://`.
+Treat ghcr.io as a distribution channel and keep staging the local `.sif`. Details in
+[`APPTAINER.md`](APPTAINER.md).
+
+</details>
 
 ### 2. Prepare Input Data
 

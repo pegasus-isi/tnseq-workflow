@@ -101,15 +101,30 @@ class TNseqWorkflow:
 
         self.sc.add_sites(local, exec_site)
 
-    def create_transformation_catalog(self, exec_site_name="condorpool"):
+    def create_transformation_catalog(
+        self,
+        exec_site_name="condorpool",
+        container_sif="Apptainer/Tnseq_Container.sif",
+    ):
         self.tc = TransformationCatalog()
 
-        # Container with all bioinformatics tools
+        # Container with all bioinformatics tools — a local Apptainer .sif built
+        # with `apptainer build`. Pegasus stages the file like any other input,
+        # so image_site is the site where the .sif physically lives ("local").
+        sif_path = (
+            container_sif
+            if os.path.isabs(container_sif)
+            else os.path.join(self.wf_dir, container_sif)
+        )
+        if not os.path.exists(sif_path):
+            print(f"Warning: Apptainer image not found at {sif_path} — build it "
+                  f"first with: apptainer build {sif_path} "
+                  f"Apptainer/Tnseq_Container.def")
         tnseq_container = Container(
             "tnseq_container",
             container_type=Container.SINGULARITY,
-            image="docker://kthare10/tnseq:latest",
-            image_site="docker_hub",
+            image="file://" + sif_path,
+            image_site="local",
         )
 
         # Transformations
@@ -596,6 +611,14 @@ if __name__ == "__main__":
         default="TGTATAAGAG",
         help="Transposon static region sequence (default: TGTATAAGAG)",
     )
+    parser.add_argument(
+        "--container-sif",
+        metavar="PATH",
+        type=str,
+        default="Apptainer/Tnseq_Container.sif",
+        help="Path to the Apptainer .sif image, absolute or relative to the "
+             "workflow directory (default: Apptainer/Tnseq_Container.sif)",
+    )
 
     args = parser.parse_args()
 
@@ -636,7 +659,10 @@ if __name__ == "__main__":
         if not args.skip_sites_catalog:
             workflow.create_sites_catalog(exec_site_name=args.execution_site_name)
 
-        workflow.create_transformation_catalog(exec_site_name=args.execution_site_name)
+        workflow.create_transformation_catalog(
+            exec_site_name=args.execution_site_name,
+            container_sif=args.container_sif,
+        )
         workflow.create_replica_catalog()
         workflow.create_workflow()
         workflow.write()

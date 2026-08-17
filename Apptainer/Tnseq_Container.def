@@ -1,0 +1,58 @@
+# Tn-seq (transposon sequencing) workflow container.
+# BWA-MEM alignment, samtools/bedtools, seqkit, deeptools, R.
+#
+# Converted from Docker/Tnseq_Dockerfile. `Bootstrap: docker` pulls and converts
+# the OCI base image directly, so no Docker installation is needed to build the
+# .sif.
+#
+# ARCHITECTURE: the seqkit release fetched below is the linux_amd64 build, so
+# this definition produces an x86_64-only image. Building it on an aarch64 host
+# yields a .sif whose seqkit binary cannot execute. See README for the remote
+# build procedure.
+#
+# Build (on an x86_64 Linux host):
+#   apptainer build Apptainer/Tnseq_Container.sif Apptainer/Tnseq_Container.def
+
+Bootstrap: docker
+From: ubuntu:22.04
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    # curl + wget are mandatory: PegasusLite downloads its worker package
+    # inside the container before the job script ever runs.
+    apt-get update && \
+        apt-get install -y \
+            python3 python3-pip \
+            openjdk-17-jre-headless \
+            wget curl git \
+            ca-certificates \
+            samtools \
+            bedtools \
+            bwa \
+            r-base \
+            r-cran-optparse
+    rm -rf /var/lib/apt/lists/*
+
+    # Install seqkit
+    wget -q https://github.com/shenwei356/seqkit/releases/download/v2.5.1/seqkit_linux_amd64.tar.gz \
+            -O /tmp/seqkit.tar.gz
+    tar -xzf /tmp/seqkit.tar.gz -C /usr/local/bin/
+    rm /tmp/seqkit.tar.gz
+
+    # Install deeptools (provides bamCoverage)
+    pip3 install --no-cache-dir deeptools==3.5.4
+
+    # Ensure python3 is available as python
+    ln -sf /usr/bin/python3 /usr/bin/python
+
+%environment
+    # Set Python to not buffer output (important for Pegasus log capture)
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    exec /bin/bash "$@"
+
+%labels
+    maintainer Komal Thareja <kthare10@renci.org>
+    description Tn-seq workflow - BWA-MEM alignment, seqkit, deeptools, R
