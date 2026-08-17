@@ -52,8 +52,10 @@ tnseq-workflow/
 │   └── je_1.2_bundle.jar       # Je UMI tool (Java)
 ├── data/
 │   └── test/                   # Test FASTQ files (100K reads from NCBI SRA)
+├── Apptainer/
+│   └── Tnseq_Container.def     # Container definition with all bioinformatics tools
 ├── Docker/
-│   └── Tnseq_Dockerfile        # Container with all bioinformatics tools
+│   └── Tnseq_Dockerfile        # Legacy Dockerfile, kept as a fallback
 └── references/                  # C. crescentus NA1000 reference genome and gene annotations
 ```
 
@@ -62,7 +64,7 @@ tnseq-workflow/
 - [Pegasus WMS](https://pegasus.isi.edu/) >= 5.0
 - [HTCondor](https://htcondor.org/) >= 10.2
 - Python 3.8+
-- Docker or Singularity (for container execution)
+- Apptainer (on the submit host to build, and on the worker nodes to run)
 
 ## Setup
 
@@ -85,7 +87,33 @@ No registry push — Pegasus stages the `.sif` like any other input file, and
 This image is **x86_64-only**: it installs the `seqkit_linux_amd64` release, so a
 `.sif` built on aarch64 would contain a `seqkit` binary that cannot execute. And
 Apptainer cannot build on macOS at all — build on an x86_64 Linux host. See
-`../APPTAINER.md`. The legacy `Docker/Tnseq_Dockerfile` is kept as a fallback.
+[`APPTAINER.md`](APPTAINER.md). The legacy `Docker/Tnseq_Dockerfile` is kept as a fallback.
+
+<details>
+<summary>Optional: publish the image to ghcr.io</summary>
+
+Useful for sharing one build across a team or citing an immutable artifact. Needs a
+GitHub token with `write:packages`.
+
+```bash
+echo "$GHCR_TOKEN" | apptainer registry login --username <github-user> \
+    --password-stdin oras://ghcr.io
+
+TAG=$(git rev-parse --short HEAD)
+apptainer push Apptainer/Tnseq_Container.sif \
+    oras://ghcr.io/pegasus-isi/tnseq-workflow:$TAG
+
+# On the submit host, pull back to the path the generator expects
+apptainer pull Apptainer/Tnseq_Container.sif \
+    oras://ghcr.io/pegasus-isi/tnseq-workflow:$TAG
+```
+
+Do **not** put the `oras://` URL in the transformation catalog — Pegasus supports
+`docker://`, `shub://`, `library://`, `shifter://` and `file://`, not `oras://`.
+Treat ghcr.io as a distribution channel and keep staging the local `.sif`. Details in
+[`APPTAINER.md`](APPTAINER.md).
+
+</details>
 
 ### 2. Prepare Input Data
 
