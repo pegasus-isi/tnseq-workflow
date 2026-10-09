@@ -21,6 +21,14 @@ Usage:
     ./workflow_generator.py --samples sample1 sample2 --ref-fasta ref.fasta \\
                             --ref-mid ref_mid.bed --ref-full ref_full.bed \\
                             --output workflow.yml
+
+    # A Slurm cluster:
+    ./workflow_generator.py ... -e compute --site-style slurm \\
+                            --queue cpu --project my_lab
+
+Sites: the workflow names no scheduler. Jobs state cores, memory and a
+wall-clock runtime; custom_sites.py writes sites.yml for an HTCondor pool by
+default, or for Slurm via --site-style slurm --queue --project.
 """
 
 import os
@@ -31,10 +39,27 @@ from argparse import ArgumentParser
 
 from Pegasus.api import *
 
+# Site-catalog handling. Keeps this generator free of scheduler details.
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+from custom_sites import (  # noqa: E402
+    HOSTED_SITE, STYLES, ensure_sites_yml, hosted_catalog, is_batch_site, parse_profile,
+    parse_tag_profile, worker_package_url,
+)
+
+# Execution site when -e is not given: an HTCondor pool, unless ~/.pegasusrc
+# names a hosted catalog (pegasushub pegasus-site-catalogs), whose one site is
+# HOSTED_SITE ("compute").
+DEFAULT_SITE = "condorpool"
+
+# The container's OS, for the Pegasus worker package staged into it. Must
+# run on the image's base (Apptainer/Tnseq_Container.def: ubuntu:22.04,
+# glibc 2.35), not the submit host. Pegasus publishes no ubuntu_22 package,
+# so use the oldest-glibc one, rhel_8 (glibc 2.28).
+CONTAINER_PLATFORM = "x86_64_rhel_8"
+
 
 class TNseqWorkflow:
     wf = None
-    sc = None
     tc = None
     rc = None
     props = None
@@ -44,6 +69,9 @@ class TNseqWorkflow:
     shared_scratch_dir = None
     local_storage_dir = None
     wf_name = "tnseq_workflow"
+    # Set from the site in use (see the site-catalog block in __main__).
+    worker_package_url = None
+    bind_workflow_dir = False
 
     def __init__(
         self,
@@ -67,45 +95,46 @@ class TNseqWorkflow:
         self.transposon_seq = transposon_seq
 
     def write(self):
-        if self.sc is not None:
-            self.sc.write()
         self.props.write()
         self.rc.write()
         self.tc.write()
         self.wf.write(file=self.dagfile)
 
-    def create_pegasus_properties(self):
+    def create_pegasus_properties(self, sites_yml="sites.yml",
+                                  bypass_input_staging=False):
         self.props = Properties()
         self.props["pegasus.transfer.threads"] = "16"
-        return
-
-    def create_sites_catalog(self, exec_site_name="condorpool"):
-        self.sc = SiteCatalog()
-
-        local = Site("local").add_directories(
-            Directory(
-                Directory.SHARED_SCRATCH, self.shared_scratch_dir
-            ).add_file_servers(
-                FileServer("file://" + self.shared_scratch_dir, Operation.ALL)
-            ),
-            Directory(Directory.LOCAL_STORAGE, self.local_storage_dir).add_file_servers(
-                FileServer("file://" + self.local_storage_dir, Operation.ALL)
-            ),
-        )
-
-        exec_site = (
-            Site(exec_site_name)
-            .add_condor_profile(universe="vanilla")
-            .add_pegasus_profile(style="condor")
-        )
-
-        self.sc.add_sites(local, exec_site)
+        # Symlink rather than copy when an input already sits on the
+        # execution site. A no-op otherwise, so always on.
+        self.props["pegasus.transfer.links"] = "true"
+        if bypass_input_staging:
+            # Jobs read inputs (notably the .sif) straight from the submit
+            # host's paths. Only valid where workers share a filesystem with
+            # the submit host (a Slurm cluster) — never on a condor pool
+            # staging over HTCondor file transfer.
+            self.props["pegasus.transfer.bypass.input.staging"] = "true"
+        if self.worker_package_url:
+            # Stage the container-compatible worker package named in the TC
+            # (pegasus::worker) and never download one from inside a job:
+            # the image may lack curl/wget, workers may lack internet, and the
+            # submit host's kickstart may need a newer glibc than the image.
+            self.props["pegasus.transfer.worker.package"] = "true"
+            self.props["pegasus.transfer.worker.package.strict"] = "false"
+            self.props["pegasus.transfer.worker.package.autodownload"] = "false"
+        if os.path.isfile(sites_yml):
+            # Lets pegasus-plan find sites.yml from any directory.
+            self.props["pegasus.catalog.site"] = "YAML"
+            self.props["pegasus.catalog.site.file"] = os.path.abspath(sites_yml)
 
     def create_transformation_catalog(
         self,
-        exec_site_name="condorpool",
         container_sif="Apptainer/Tnseq_Container.sif",
     ):
+        """Container and transformations. Nothing here names an execution
+        site: the scripts and the .sif live on "local" (the submit host) and
+        are shipped to wherever the job runs. Each tool states memory, cores
+        and a wall-clock runtime (seconds) — batch sites (Slurm) refuse or
+        kill jobs without one, so keep it generous."""
         self.tc = TransformationCatalog()
 
         # Container with all bioinformatics tools — a local Apptainer .sif built
@@ -126,6 +155,14 @@ class TNseqWorkflow:
             image="file://" + sif_path,
             image_site="local",
         )
+        if self.bind_workflow_dir:
+            # Batch sites stage inputs as symlinks into the workflow
+            # directory, and PegasusLite starts containers with --no-home, so
+            # without this bind every job fails with kickstart "Unable to
+            # execute the specified binary" (exit 127). Never on a condor
+            # pool: the directory does not exist on its workers.
+            tnseq_container.add_pegasus_profile(
+                container_arguments=f"--bind {self.wf_dir}")
 
         # Transformations
         mkdir = Transformation(
@@ -134,89 +171,103 @@ class TNseqWorkflow:
 
         clip = Transformation(
             "clip",
-            site=exec_site_name,
+            site="local",
             pfn=os.path.join(self.wf_dir, "bin/clip.py"),
             is_stageable=True,
             container=tnseq_container,
-        ).add_pegasus_profile(memory="6 GB")
+        ).add_pegasus_profile(memory="6 GB", runtime=3600)
 
         seqkit_grep = Transformation(
             "seqkit_grep",
-            site=exec_site_name,
+            site="local",
             pfn=os.path.join(self.wf_dir, "bin/seqkit_grep.py"),
             is_stageable=True,
             container=tnseq_container,
-        ).add_pegasus_profile(memory="2 GB", cores=4)
+        ).add_pegasus_profile(memory="2 GB", cores=4, runtime=1800)
 
         bwa_mem = Transformation(
             "bwa_mem",
-            site=exec_site_name,
+            site="local",
             pfn=os.path.join(self.wf_dir, "bin/bwa_mem.py"),
             is_stageable=True,
             container=tnseq_container,
-        ).add_pegasus_profile(memory="6 GB", cores=4)
+        ).add_pegasus_profile(memory="6 GB", cores=4, runtime=7200)
 
         rm_dupe = Transformation(
             "rm_dupe",
-            site=exec_site_name,
+            site="local",
             pfn=os.path.join(self.wf_dir, "bin/rm_dupe.py"),
             is_stageable=True,
             container=tnseq_container,
-        ).add_pegasus_profile(memory="6 GB")
+        ).add_pegasus_profile(memory="6 GB", runtime=3600)
 
         genomecov = Transformation(
             "genomecov",
-            site=exec_site_name,
+            site="local",
             pfn=os.path.join(self.wf_dir, "bin/genomecov.py"),
             is_stageable=True,
             container=tnseq_container,
-        ).add_pegasus_profile(memory="2 GB")
+        ).add_pegasus_profile(memory="2 GB", runtime=1800)
 
         bedtools_map = Transformation(
             "bedtools_map",
-            site=exec_site_name,
+            site="local",
             pfn=os.path.join(self.wf_dir, "bin/bedtools_map.py"),
             is_stageable=True,
             container=tnseq_container,
-        ).add_pegasus_profile(memory="2 GB")
+        ).add_pegasus_profile(memory="2 GB", runtime=1800)
 
         bam2bw = Transformation(
             "bam2bw",
-            site=exec_site_name,
+            site="local",
             pfn=os.path.join(self.wf_dir, "bin/bam2bw.py"),
             is_stageable=True,
             container=tnseq_container,
-        ).add_pegasus_profile(memory="4 GB", cores=2)
+        ).add_pegasus_profile(memory="4 GB", cores=2, runtime=3600)
 
         tab_generate = Transformation(
             "tab_generate",
-            site=exec_site_name,
+            site="local",
             pfn=os.path.join(self.wf_dir, "bin/tab_generate.py"),
             is_stageable=True,
             container=tnseq_container,
-        ).add_pegasus_profile(memory="2 GB")
+        ).add_pegasus_profile(memory="2 GB", runtime=1800)
 
         concat = Transformation(
             "concat",
-            site=exec_site_name,
+            site="local",
             pfn=os.path.join(self.wf_dir, "bin/concat.py"),
             is_stageable=True,
             container=tnseq_container,
-        ).add_pegasus_profile(memory="2 GB")
+        ).add_pegasus_profile(memory="2 GB", runtime=1800)
 
         seqkit_qc = Transformation(
             "seqkit_qc",
-            site=exec_site_name,
+            site="local",
             pfn=os.path.join(self.wf_dir, "bin/seqkit_qc.py"),
             is_stageable=True,
             container=tnseq_container,
-        ).add_pegasus_profile(memory="2 GB", cores=4)
+        ).add_pegasus_profile(memory="2 GB", cores=4, runtime=1800)
 
-        self.tc.add_containers(tnseq_container)
-        self.tc.add_transformations(
+        transformations = [
             mkdir, clip, seqkit_grep, bwa_mem, rm_dupe, genomecov,
             bedtools_map, bam2bw, tab_generate, concat, seqkit_qc
-        )
+        ]
+        if self.worker_package_url:
+            transformations.append(
+                Transformation(
+                    "worker",
+                    namespace="pegasus",
+                    site="local",
+                    pfn=self.worker_package_url,
+                    is_stageable=True,
+                    arch=Arch.X86_64,
+                    os_type=OS.LINUX,
+                )
+            )
+
+        self.tc.add_containers(tnseq_container)
+        self.tc.add_transformations(*transformations)
 
     def create_replica_catalog(self):
         self.rc = ReplicaCatalog()
@@ -546,20 +597,52 @@ def discover_samples(fastq_dir):
 if __name__ == "__main__":
     parser = ArgumentParser(description="Pegasus TNseq Workflow Generator")
 
-    parser.add_argument(
-        "-s",
-        "--skip-sites-catalog",
-        action="store_true",
-        help="Skip site catalog creation",
-    )
+    # Every site option has a default, so a run with only the inputs plans on
+    # an HTCondor pool, or on a hosted catalog's "compute" when ~/.pegasusrc
+    # names one; the rest tailor sites.yml for a batch cluster. dest
+    # "execution_site" is what Studio matches to keep its "Where it runs"
+    # choice in sync.
     parser.add_argument(
         "-e",
+        "--execution-site",
         "--execution-site-name",
+        dest="execution_site",
         metavar="STR",
         type=str,
-        default="condorpool",
-        help="Execution site name (default: condorpool)",
+        default=None,
+        help=f"Site to plan against (default: {HOSTED_SITE!r} when "
+             "~/.pegasusrc names a hosted catalog, which call their site "
+             f"that; otherwise {DEFAULT_SITE!r})",
     )
+    parser.add_argument(
+        "--site-style",
+        choices=("auto",) + STYLES + ("none",),
+        default="auto",
+        help="auto (default): keep a sites.yml entry or hosted catalog if one "
+             "exists, else add an HTCondor site. condor/slurm: (re)write this "
+             "site's entry. none: leave sites.yml alone.",
+    )
+    parser.add_argument("--queue", metavar="PARTITION",
+                        help="Batch partition/queue jobs submit to")
+    parser.add_argument("--project", metavar="ACCOUNT",
+                        help="Allocation/account charged on a batch site")
+    parser.add_argument("--site-scratch", metavar="DIR",
+                        help="Slurm: shared scratch visible to workers and "
+                             "the submit host (default: ./work)")
+    parser.add_argument("--site-profile", action="append", default=[],
+                        type=parse_profile, metavar="NS:KEY=VALUE",
+                        help="Extra profile on the execution site; repeatable")
+    parser.add_argument("--tag-profile", action="append", default=[],
+                        type=parse_tag_profile, metavar="TAG:NS:KEY=VALUE",
+                        help="Profile for jobs carrying a tag; repeatable")
+    parser.add_argument("--shared-filesystem", choices=("auto", "yes", "no"),
+                        default="auto",
+                        help="Let jobs read inputs directly from the submit "
+                             "host. auto: on for Slurm sites, off for HTCondor.")
+    parser.add_argument("--sites-yml", metavar="FILE", default="sites.yml",
+                        help="Local site catalog (default: sites.yml)")
+    parser.add_argument("-s", "--skip-sites-catalog", action="store_true",
+                        help="Deprecated: same as --site-style none")
     parser.add_argument(
         "-o",
         "--output",
@@ -621,6 +704,8 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    if args.execution_site is None:
+        args.execution_site = HOSTED_SITE if hosted_catalog() else DEFAULT_SITE
 
     # Auto-discover samples if not provided
     if args.samples is None:
@@ -639,7 +724,7 @@ if __name__ == "__main__":
     print(f"Reference (mid): {args.ref_mid}")
     print(f"Reference (full): {args.ref_full}")
     print(f"Transposon sequence: {args.transposon_seq}")
-    print(f"Execution site: {args.execution_site_name}")
+    print(f"Execution site: {args.execution_site}")
     print("=" * 70)
 
     try:
@@ -654,13 +739,40 @@ if __name__ == "__main__":
         )
 
         print("\nGenerating workflow...")
-        workflow.create_pegasus_properties()
+        # Site catalog and the settings that depend on the site
+        if args.skip_sites_catalog:
+            args.site_style = "none"
+        action, style = ensure_sites_yml(
+            args.sites_yml, args.execution_site, workflow.wf_dir,
+            style=args.site_style, queue=args.queue, project=args.project,
+            scratch=args.site_scratch, profiles=args.site_profile,
+            tag_profiles=args.tag_profile)
+        hosted = hosted_catalog()
+        print(f"Site catalog: {args.sites_yml}: {action}"
+              + (f" (merged over hosted {hosted})" if hosted else ""))
+        if (style is None and hosted and args.execution_site != "local"
+                and args.execution_site != HOSTED_SITE):
+            # Nothing was written for this site, so planning works only if
+            # the hosted catalog happens to define it.
+            print(f"Warning: {args.execution_site!r} is not defined in "
+                  f"{args.sites_yml} and hosted catalogs normally define only "
+                  f"{HOSTED_SITE!r}: pegasus-plan will fail unless {hosted} "
+                  f"has it. Use -e {HOSTED_SITE}, or --site-style "
+                  f"condor/slurm to describe {args.execution_site!r}.")
+        if args.shared_filesystem == "auto":
+            bypass = style is not None and style != "condor"
+        else:
+            bypass = args.shared_filesystem == "yes"
+        workflow.bind_workflow_dir = bypass or is_batch_site(style)
+        workflow.worker_package_url = worker_package_url(CONTAINER_PLATFORM)
+        if not workflow.worker_package_url:
+            print("Warning: pegasus-version not found: Pegasus will choose "
+                  "the container's worker package itself (needs curl/wget in "
+                  "the image and internet on the workers)")
 
-        if not args.skip_sites_catalog:
-            workflow.create_sites_catalog(exec_site_name=args.execution_site_name)
-
+        workflow.create_pegasus_properties(
+            sites_yml=args.sites_yml, bypass_input_staging=bypass)
         workflow.create_transformation_catalog(
-            exec_site_name=args.execution_site_name,
             container_sif=args.container_sif,
         )
         workflow.create_replica_catalog()
@@ -669,7 +781,7 @@ if __name__ == "__main__":
 
         print(f"\nWorkflow written to {args.output}")
         print(f"\nTo submit the workflow:")
-        print(f"  pegasus-plan --submit -s {args.execution_site_name} -o local {args.output}")
+        print(f"  pegasus-plan --submit -s {args.execution_site} -o local {args.output}")
 
     except Exception as e:
         print(f"\nError creating workflow: {e}", file=sys.stderr)

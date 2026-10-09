@@ -36,6 +36,7 @@ The following diagram shows the workflow DAG:
 ```
 tnseq-workflow/
 ├── workflow_generator.py       # Pegasus workflow generator
+├── custom_sites.py             # Writes sites.yml (HTCondor or Slurm)
 ├── bin/
 │   ├── clip.py                 # UMI clipping wrapper
 │   ├── seqkit_grep.py          # Transposon filtering wrapper
@@ -202,9 +203,30 @@ The full BioProject also includes two M2G-condition samples (SRX23214404, SRX232
 | `--ref-full` | (required) | BED file for full-length gene features |
 | `--samples` | auto-discover | Sample names (without `.fq.gz` extension) |
 | `--transposon-seq` | `TGTATAAGAG` | Transposon static region sequence |
-| `-e`, `--execution-site-name` | `condorpool` | HTCondor execution site name |
-| `-s`, `--skip-sites-catalog` | false | Skip site catalog creation |
+| `--container-sif` | `Apptainer/Tnseq_Container.sif` | Apptainer image, absolute or relative to the workflow directory |
+| `-e`, `--execution-site` | `condorpool` (`compute` with a hosted catalog) | Site to plan against |
+| `--site-style` | `auto` | `auto`: keep an existing `sites.yml` entry or hosted catalog, else add an HTCondor site; `condor`/`slurm`: (re)write the site; `none`: leave `sites.yml` alone |
+| `--queue`, `--project` | — | Batch partition and allocation account (Slurm) |
+| `--site-scratch` | `./work` | Slurm shared scratch visible to workers and the submit host |
+| `--site-profile`, `--tag-profile` | — | Extra profiles on the site or on tagged jobs; repeatable |
+| `--shared-filesystem` | `auto` | Read inputs directly from the submit host (on for Slurm, off for HTCondor) |
+| `--sites-yml` | `sites.yml` | Local site catalog |
 | `-o`, `--output` | `workflow.yml` | Output workflow file |
+
+### Sites
+
+The workflow names no scheduler: each job states cores, memory and a
+wall-clock runtime, and `custom_sites.py` writes `sites.yml` for the site.
+With no options it adds an HTCondor pool named `condorpool`. For a Slurm
+cluster:
+
+```bash
+./workflow_generator.py --fastq-dir data/test/ ... \
+    -e compute --site-style slurm --queue cpu --project my_lab
+pegasus-plan --submit -s compute -o local workflow.yml
+```
+
+`custom_sites.py` also runs standalone (`./custom_sites.py --help`).
 
 ### Submit Workflow
 

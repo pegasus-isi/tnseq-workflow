@@ -41,7 +41,7 @@ From: ubuntu:22.04
     rm /tmp/seqkit.tar.gz
 
     # Install deeptools (provides bamCoverage)
-    pip3 install --no-cache-dir deeptools==3.5.4
+    pip3 install --no-cache-dir deeptools==3.5.4.post1
 
     # Ensure python3 is available as python
     ln -sf /usr/bin/python3 /usr/bin/python
