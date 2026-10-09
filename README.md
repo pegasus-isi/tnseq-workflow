@@ -204,8 +204,9 @@ The full BioProject also includes two M2G-condition samples (SRX23214404, SRX232
 | `--samples` | auto-discover | Sample names (without `.fq.gz` extension) |
 | `--transposon-seq` | `TGTATAAGAG` | Transposon static region sequence |
 | `--container-sif` | `Apptainer/Tnseq_Container.sif` | Apptainer image, absolute or relative to the workflow directory |
-| `-e`, `--execution-site` | `condorpool` (`compute` with a hosted catalog) | Site to plan against |
-| `--site-style` | `auto` | `auto`: keep an existing `sites.yml` entry or hosted catalog, else add an HTCondor site; `condor`/`slurm`: (re)write the site; `none`: leave `sites.yml` alone |
+| `-e`, `--execution-site` | `compute` | Site to plan against (the name hosted catalogs give their site) |
+| `-s`, `--hosted-site-catalog` | (none; `~/.pegasusrc` if set) | Hosted site catalog to plan against, e.g. `unity.yml` |
+| `--site-style` | `auto` | `auto`: keep an existing `sites.yml` entry or hosted catalog, else write `compute` as an HTCondor pool; `condor`/`slurm`: (re)write the site; `none`: leave `sites.yml` alone |
 | `--queue`, `--project` | — | Batch partition and allocation account (Slurm) |
 | `--site-scratch` | `./work` | Slurm shared scratch visible to workers and the submit host |
 | `--site-profile`, `--tag-profile` | — | Extra profiles on the site or on tagged jobs; repeatable |
@@ -217,12 +218,13 @@ The full BioProject also includes two M2G-condition samples (SRX23214404, SRX232
 
 The workflow names no scheduler: each job states cores, memory and a
 wall-clock runtime, and `custom_sites.py` writes `sites.yml` for the site.
-With no options it adds an HTCondor pool named `condorpool`. For a Slurm
-cluster:
+Jobs plan against a site named `compute`. With `-s unity.yml` (or a hosted
+catalog set in `~/.pegasusrc`) the hosted catalog defines it; with no options
+`custom_sites.py` writes it as an HTCondor pool. For a Slurm cluster:
 
 ```bash
 ./workflow_generator.py --fastq-dir data/test/ ... \
-    -e compute --site-style slurm --queue cpu --project my_lab
+    --site-style slurm --queue cpu --project my_lab
 pegasus-plan --submit -s compute -o local workflow.yml
 ```
 
@@ -231,7 +233,7 @@ pegasus-plan --submit -s compute -o local workflow.yml
 ### Submit Workflow
 
 ```bash
-pegasus-plan --submit -s condorpool -o local workflow.yml
+pegasus-plan --submit -s compute -o local workflow.yml
 ```
 
 ### Monitor Workflow
