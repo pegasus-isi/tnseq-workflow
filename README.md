@@ -36,6 +36,7 @@ The following diagram shows the workflow DAG:
 ```
 tnseq-workflow/
 ├── workflow_generator.py       # Pegasus workflow generator
+├── TNseq-Workflow.ipynb        # Notebook: generate, plan, submit, monitor (imports the generator)
 ├── bin/
 │   ├── clip.py                 # UMI clipping wrapper
 │   ├── seqkit_grep.py          # Transposon filtering wrapper
@@ -147,8 +148,15 @@ Reference files for *C. crescentus* NA1000 (NC_011916) are included in `referenc
     --ref-fasta references/NC_011916.fasta \
     --ref-mid references/CCNA_mid_trim10_10.bed \
     --ref-full references/CCNA_genes.bed \
-    --output workflow.yml
+    --output workflow.yml \
+    -e condorpool          # plain HTCondor pool; or -s access-pegasus.yml
+
+# Plan and submit (the generator prints this command; it never submits)
+pegasus-plan --dir submit -s condorpool -o local --output-dir "$PWD/output" --submit workflow.yml
 ```
+
+Or run every step, including submit and monitoring, from the notebook
+`TNseq-Workflow.ipynb` (`jupyter lab TNseq-Workflow.ipynb`).
 
 ### Downloading Full Datasets
 
@@ -202,14 +210,46 @@ The full BioProject also includes two M2G-condition samples (SRX23214404, SRX232
 | `--ref-full` | (required) | BED file for full-length gene features |
 | `--samples` | auto-discover | Sample names (without `.fq.gz` extension) |
 | `--transposon-seq` | `TGTATAAGAG` | Transposon static region sequence |
-| `-e`, `--execution-site-name` | `condorpool` | HTCondor execution site name |
-| `-s`, `--skip-sites-catalog` | false | Skip site catalog creation |
+| `--container-sif` | `Apptainer/Tnseq_Container.sif` | Apptainer image, absolute or relative to the workflow directory |
+| `-s`, `--hosted-site-catalog` | (none; `~/.pegasusrc` if set) | [Hosted site catalog](https://github.com/pegasushub/pegasus-site-catalogs/tree/main/conf) to plan against, e.g. `access-pegasus.yml`, `unity.yml` |
+| `-e`, `--execution-site-name` | `compute` | Execution site name; `condorpool` on a plain HTCondor pool with no site catalog |
 | `-o`, `--output` | `workflow.yml` | Output workflow file |
+
+### Sites
+
+Jobs run on a site named `compute`, which a site catalog you choose defines —
+the [pegasus-gromacs](https://github.com/pegasus-isi/pegasus-gromacs) pattern.
+The generator writes no site catalog, because where jobs run depends on your
+resource provider and allocation, not on the workflow:
+
+- **A hosted site catalog** from
+  [pegasus-site-catalogs](https://github.com/pegasushub/pegasus-site-catalogs/tree/main/conf)
+  (`access-pegasus.yml`, `unity.yml`, `nersc-perlmutter.yml`, ...): pass
+  `-s <catalog>.yml`, or set it once for all workflows in `~/.pegasusrc`
+  together with your allocation (`env.RESOURCE_USERNAME`,
+  `env.RESOURCE_PROJECT`). Partitions and accounts come from the catalog.
+- **A plain HTCondor pool with no site catalog** (a FABRIC slice, a laptop):
+  generate with `-e condorpool`; Pegasus defines that site itself.
+
+```bash
+./workflow_generator.py --fastq-dir data/test/ --ref-fasta references/NC_011916.fasta --ref-mid references/CCNA_mid_trim10_10.bed --ref-full references/CCNA_genes.bed -s access-pegasus.yml
+./workflow_generator.py --fastq-dir data/test/ --ref-fasta references/NC_011916.fasta --ref-mid references/CCNA_mid_trim10_10.bed --ref-full references/CCNA_genes.bed -e condorpool
+```
+
+The generator writes the workflow and catalogs and prints the `pegasus-plan`
+command; it does not submit. The notebook `TNseq-Workflow.ipynb` runs the same generator
+class interactively — including a local HTCondor site catalog — and submits
+from an explicit cell.
+
+Where outputs land: `output/`. The notebook's local site catalog stages them
+there, and the printed plan command passes `--output-dir "$PWD/output"`
+(without it, `-e condorpool` or a hosted catalog, which define no `local`
+site, would leave them in Pegasus's default `wf-output/`).
 
 ### Submit Workflow
 
 ```bash
-pegasus-plan --submit -s condorpool -o local workflow.yml
+pegasus-plan --dir submit -s compute -o local --output-dir "$PWD/output" --submit workflow.yml
 ```
 
 ### Monitor Workflow

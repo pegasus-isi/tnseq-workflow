@@ -20,7 +20,7 @@ RUN wget -q https://github.com/shenwei356/seqkit/releases/download/v2.5.1/seqkit
     rm /tmp/seqkit.tar.gz
 
 # Install deeptools (provides bamCoverage)
-RUN pip3 install --no-cache-dir deeptools==3.5.4
+RUN pip3 install --no-cache-dir deeptools==3.5.4.post1
 
 # Ensure python3 is available as python
 RUN ln -sf /usr/bin/python3 /usr/bin/python

@@ -21,6 +21,13 @@ Usage:
     ./workflow_generator.py --samples sample1 sample2 --ref-fasta ref.fasta \\
                             --ref-mid ref_mid.bed --ref-full ref_full.bed \\
                             --output workflow.yml
+
+Sites follow pegasus-isi/pegasus-gromacs: jobs run on a site named "compute",
+defined by a centrally hosted site catalog (-s access-pegasus.yml, ...;
+https://github.com/pegasushub/pegasus-site-catalogs) or by one in
+~/.pegasusrc. The generator writes no site catalog and does not submit: it
+prints the pegasus-plan command. On a plain HTCondor pool with no site
+catalog, generate with -e condorpool (Pegasus defines that site itself).
 """
 
 import os
@@ -74,12 +81,62 @@ class TNseqWorkflow:
         self.tc.write()
         self.wf.write(file=self.dagfile)
 
-    def create_pegasus_properties(self):
+    # ------------------------------------------------------------------
+    # Plan / run / monitor (thin wrappers over the Pegasus API Workflow
+    # object, for interactive use e.g. from a Jupyter notebook)
+    # ------------------------------------------------------------------
+    def plan_submit(self, exec_site_name="compute", raise_errors=False):
+        try:
+            self.wf.plan(
+                dir="submit",
+                sites=[exec_site_name],
+                output_sites=["local"],
+                cleanup="none",
+                verbose=1,
+                submit=True,
+            )
+        except PegasusClientError as e:
+            print(e)
+            if raise_errors:
+                raise
+
+    def status(self):
+        try:
+            self.wf.status(long=True)
+        except PegasusClientError as e:
+            print(e)
+
+    def wait(self):
+        try:
+            self.wf.wait()
+        except PegasusClientError as e:
+            print(e)
+
+    def statistics(self):
+        try:
+            self.wf.statistics()
+        except PegasusClientError as e:
+            print(e)
+
+    def create_pegasus_properties(self, hosted_site_catalog=None):
         self.props = Properties()
         self.props["pegasus.transfer.threads"] = "16"
-        return
+        if hosted_site_catalog:
+            # Use one of Pegasus' centrally hosted site catalogs instead of
+            # a locally generated one. pegasus-plan downloads and caches the
+            # named file from the catalog repository at plan time.
+            # https://pegasus.isi.edu/documentation/reference-guide/catalogs.html#centrally-hosted-site-catalogs
+            self.props["pegasus.catalog.site.repo.file"] = hosted_site_catalog
 
-    def create_sites_catalog(self, exec_site_name="condorpool"):
+    # ------------------------------------------------------------------
+    # Site Catalog
+    #
+    # Not used by the CLI below by default — pegasus-plan resolves the site
+    # catalog from a centrally hosted one instead (see -s/--hosted-site-catalog
+    # and create_pegasus_properties above). Kept for programmatic/notebook use
+    # when a self-contained, locally generated HTCondor site catalog is wanted.
+    # ------------------------------------------------------------------
+    def create_sites_catalog(self, exec_site_name="compute"):
         self.sc = SiteCatalog()
 
         local = Site("local").add_directories(
@@ -103,7 +160,7 @@ class TNseqWorkflow:
 
     def create_transformation_catalog(
         self,
-        exec_site_name="condorpool",
+        exec_site_name="compute",
         container_sif="Apptainer/Tnseq_Container.sif",
     ):
         self.tc = TransformationCatalog()
@@ -543,22 +600,37 @@ def discover_samples(fastq_dir):
     return sorted(samples)
 
 
-if __name__ == "__main__":
-    parser = ArgumentParser(description="Pegasus TNseq Workflow Generator")
+def build_parser():
+    """The CLI's argument parser (also used by the notebook)."""
+    parser = ArgumentParser(
+        description="Pegasus TNseq Workflow Generator",
+        epilog="Writes the workflow and its catalogs; it does not plan or "
+        "submit. Plan with the command it prints, or from "
+        "TNseq-Workflow.ipynb (plan_submit()). Use -s <catalog>.yml for a "
+        "hosted site catalog, or -e condorpool on a plain HTCondor pool with "
+        "no site catalog.",
+    )
 
     parser.add_argument(
         "-s",
-        "--skip-sites-catalog",
-        action="store_true",
-        help="Skip site catalog creation",
+        "--hosted-site-catalog",
+        metavar="FILE",
+        type=str,
+        default=None,
+        help="Name of a Pegasus centrally hosted site catalog to plan against "
+        "(e.g. access-pegasus.yml), instead of a locally generated one. Sets "
+        "pegasus.catalog.site.repo.file; see "
+        "https://pegasus.isi.edu/documentation/reference-guide/catalogs.html"
+        "#centrally-hosted-site-catalogs",
     )
     parser.add_argument(
         "-e",
         "--execution-site-name",
         metavar="STR",
         type=str,
-        default="condorpool",
-        help="Execution site name (default: condorpool)",
+        default="compute",
+        help="Execution site name (default: compute; use condorpool on a "
+        "plain HTCondor pool with no site catalog)",
     )
     parser.add_argument(
         "-o",
@@ -620,7 +692,24 @@ if __name__ == "__main__":
              "workflow directory (default: Apptainer/Tnseq_Container.sif)",
     )
 
-    args = parser.parse_args()
+    return parser
+
+
+def workflow_from_args(args):
+    """A TNseqWorkflow configured from parsed CLI arguments."""
+    return TNseqWorkflow(
+        samples=args.samples,
+        fastq_dir=args.fastq_dir,
+        ref_fasta=args.ref_fasta,
+        ref_mid=args.ref_mid,
+        ref_full=args.ref_full,
+        transposon_seq=args.transposon_seq,
+        dagfile=args.output
+    )
+
+
+def main():
+    args = build_parser().parse_args()
 
     # Auto-discover samples if not provided
     if args.samples is None:
@@ -640,24 +729,14 @@ if __name__ == "__main__":
     print(f"Reference (full): {args.ref_full}")
     print(f"Transposon sequence: {args.transposon_seq}")
     print(f"Execution site: {args.execution_site_name}")
+    print(f"Hosted site catalog: {args.hosted_site_catalog or '(none — supply your own site catalog)'}")
     print("=" * 70)
 
     try:
-        workflow = TNseqWorkflow(
-            samples=args.samples,
-            fastq_dir=args.fastq_dir,
-            ref_fasta=args.ref_fasta,
-            ref_mid=args.ref_mid,
-            ref_full=args.ref_full,
-            transposon_seq=args.transposon_seq,
-            dagfile=args.output
-        )
+        workflow = workflow_from_args(args)
 
         print("\nGenerating workflow...")
-        workflow.create_pegasus_properties()
-
-        if not args.skip_sites_catalog:
-            workflow.create_sites_catalog(exec_site_name=args.execution_site_name)
+        workflow.create_pegasus_properties(hosted_site_catalog=args.hosted_site_catalog)
 
         workflow.create_transformation_catalog(
             exec_site_name=args.execution_site_name,
@@ -668,11 +747,18 @@ if __name__ == "__main__":
         workflow.write()
 
         print(f"\nWorkflow written to {args.output}")
-        print(f"\nTo submit the workflow:")
-        print(f"  pegasus-plan --submit -s {args.execution_site_name} -o local {args.output}")
+        print(f"\nTo plan and submit the workflow:")
+        # --output-dir: no site catalog defines "local", so Pegasus's built-in local
+        # site would otherwise stage outputs to ./wf-output.
+        print(f"  pegasus-plan --dir submit -s {args.execution_site_name} -o local "
+              f"--output-dir {workflow.local_storage_dir} --submit {args.output}")
 
     except Exception as e:
         print(f"\nError creating workflow: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
